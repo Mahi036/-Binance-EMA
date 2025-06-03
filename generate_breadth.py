@@ -1,21 +1,25 @@
-# generate_breadth.py
-import pandas as pd, requests, ta, csv, datetime as dt, os, sys
+import time, random, sys, json
 
+BASE_URL = "https://api.binance.vision"        # CDN mirror
 
-
-BASE_URL = "https://data.binance.com"      # <= public CDN gateway
-START    = dt.datetime(2023, 1, 1)        # warm-up ≥ 200 days
-STABLES  = {
-    'USDT','USDC','FDUSD','TUSD','DAI','USDP','BUSD','USDD',
-    'AEUR','XUSD','USD1','PYUSD','PAXG','WBTC','WBETH'
+HDRS = {
+    "User-Agent":  "Mozilla/5.0 (GitHub Actions bot)",
+    "Accept":      "application/json"
 }
+
+def safe_get_json(url, max_try=5, pause=3):
+    for i in range(max_try):
+        r = requests.get(url, headers=HDRS, timeout=15)
+        if r.ok and r.headers.get("Content-Type","").startswith("application/json"):
+            return r.json()
+        # not JSON – maybe HTML challenge; print first 120 chars for debug
+        print(f"❗ non-JSON response (try {i+1}/{max_try}):\n",
+              r.text[:120].replace('\n',' ') , "…")
+        time.sleep(pause + random.uniform(0,2))
+    sys.exit("👎 Binance API keeps returning non-JSON; aborting run.")
+
 def universe():
-    r = requests.get(f"{BASE_URL}/api/v3/exchangeInfo", timeout=15)
-    r.raise_for_status()
-    data = r.json()
-    if "symbols" not in data:
-        print("Unexpected response:\n", data)
-        sys.exit(1)
+    data = safe_get_json(f"{BASE_URL}/api/v3/exchangeInfo")
     return [
         s["symbol"] for s in data["symbols"]
         if s["status"] == "TRADING"
@@ -23,6 +27,7 @@ def universe():
         and s["quoteAsset"] == "USDT"
         and s["baseAsset"] not in STABLES
     ]
+
 
 def klines(sym, start_ms):
     out = []; frm = start_ms
