@@ -16,7 +16,7 @@ KLINE_BASES = [
     "https://api3.binance.com"
 ]
 
-START   = datetime.datetime(2023, 1, 1)
+START   = dt.datetime(2023, 1, 1)
 STABLES = {
     'USDT','USDC','FDUSD','TUSD','DAI','USDP','BUSD','USDD',
     'AEUR','XUSD','USD1','PYUSD','PAXG','WBTC','WBETH'
