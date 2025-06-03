@@ -1,35 +1,44 @@
-# --- top of generate_breadth.py ---------------------------------
-import pandas as pd, requests, ta, csv, datetime as dt, os, sys, time, random, json
+import pandas as pd, requests, ta, csv, datetime as dt, os, sys, time, random
 
-BASE_URLS = [
-    "https://data.binance.com",    # CDN mirror (usually OK)
-    "https://api.binance.com"      # main API (weight-limited but resolvable)
+# ---------- CONFIG -------------------------------------------------
+EXCHANGEINFO_SOURCES = [
+    # raw daily snapshot (JSON file) – never rate-limited
+    "https://raw.githubusercontent.com/binance/binance-spot-api-docs/master/endpoints/exchangeInfo.json",
+    # live APIs (try until one works)
+    "https://api1.binance.com/api/v3/exchangeInfo",
+    "https://api2.binance.com/api/v3/exchangeInfo",
+    "https://api3.binance.com/api/v3/exchangeInfo"
 ]
-START = dt.datetime(2023, 1, 1)
-STABLES = {...}
-HDRS = {
-    "User-Agent": "Mozilla/5.0 (GitHub Actions bot)",
-    "Accept": "application/json"
-}
 
-def safe_get_json(path, max_try=5, pause=3):
-    """Try each BASE_URL; retry a few times if HTML / rate-limit page."""
-    for base in BASE_URLS:
-        url = f"{base}{path}"
+KLINE_BASES = [
+    "https://api1.binance.com",
+    "https://api2.binance.com",
+    "https://api3.binance.com"
+]
+
+START   = datetime.datetime(2023, 1, 1)
+STABLES = {
+    'USDT','USDC','FDUSD','TUSD','DAI','USDP','BUSD','USDD',
+    'AEUR','XUSD','USD1','PYUSD','PAXG','WBTC','WBETH'
+}
+HDRS = {"User-Agent": "Mozilla/5.0 (GitHub Actions bot)"}
+
+# ---------- HELPERS ------------------------------------------------
+def get_json_with_retry(urls, max_try=5):
+    for url in urls:
         for n in range(max_try):
             try:
                 r = requests.get(url, headers=HDRS, timeout=15)
-                if (r.ok and
-                    r.headers.get("Content-Type","").startswith("application/json")):
+                if r.ok and r.headers.get("content-type","").startswith("application/json"):
                     return r.json()
-                print(f"⚠️  non-JSON ({r.status_code}) from {base} (try {n+1})")
+                print(f"⚠️  [{n+1}] non-JSON {r.status_code} from {url}")
             except requests.exceptions.RequestException as e:
-                print(f"⚠️  {e} ({base}, try {n+1})")
-            time.sleep(pause + random.uniform(0,2))
-    sys.exit("❌  All Binance endpoints failed")
+                print(f"⚠️  [{n+1}] {e} for {url}")
+            time.sleep(2+random.random())
+    sys.exit("❌  all sources failed")
 
 def universe():
-    data = safe_get_json("/api/v3/exchangeInfo")
+    data = get_json_with_retry(EXCHANGEINFO_SOURCES)
     return [
         s["symbol"] for s in data["symbols"]
         if s["status"] == "TRADING"
@@ -37,23 +46,28 @@ def universe():
         and s["quoteAsset"] == "USDT"
         and s["baseAsset"] not in STABLES
     ]
-# ----------------------------------------------------------------
-
-
 
 def klines(sym, start_ms):
-    out = []; frm = start_ms
-    while True:
-        d = requests.get(f"{BASE_URL}/api/v3/klines",
-                         params={"symbol":sym,"interval":"1d",
-                                 "startTime":frm,"limit":1000},
-                         timeout=15).json()
-        if not d: break
-        out += d
-        frm = d[-1][0] + 86_400_000
-        if len(d) < 1000: break
-    return pd.DataFrame({"time":[int(k[0]) for k in out],
-                         "close":[float(k[4]) for k in out]})
+    for base in KLINE_BASES:
+        try:
+            out, frm = [], start_ms
+            while True:
+                r = requests.get(f"{base}/api/v3/klines",
+                                 params={"symbol":sym,"interval":"1d","startTime":frm,"limit":1000},
+                                 headers=HDRS, timeout=15)
+                if not (r.ok and r.headers.get("content-type","").startswith("application/json")):
+                    raise ValueError(f"bad response {r.status_code}")
+                d = r.json()
+                if not d: break
+                out += d
+                frm = d[-1][0] + 86_400_000
+                if len(d) < 1000: break
+            return pd.DataFrame({"time":[int(k[0]) for k in out],
+                                 "close":[float(k[4]) for k in out]})
+        except Exception as e:
+            print(f"⚠️  {sym}: {e} on {base}, trying next host…")
+    sys.exit(f"❌  all kline hosts failed for {sym}")
+
 
 def tv_write(col, out_fn, df):
     os.makedirs("data", exist_ok=True)
