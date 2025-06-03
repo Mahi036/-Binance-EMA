@@ -1,0 +1,7 @@
+{
+  "symbol": "BR75",
+  "fullname": "Binance Breadth – % of non-stable coins above EMA-75",
+  "exchange": "BINANCE",
+  "type": "index",
+  "currency_code": "%"
+}
