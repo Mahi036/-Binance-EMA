@@ -1,17 +1,23 @@
 # generate_breadth.py
 import pandas as pd, requests, ta, csv, datetime as dt, os, sys
 
-BASE_URL = "https://api.binance.com"
+
+
+BASE_URL = "https://data.binance.com"      # <= public CDN gateway
 START    = dt.datetime(2023, 1, 1)        # warm-up ≥ 200 days
 STABLES  = {
     'USDT','USDC','FDUSD','TUSD','DAI','USDP','BUSD','USDD',
     'AEUR','XUSD','USD1','PYUSD','PAXG','WBTC','WBETH'
 }
-
 def universe():
-    ex = requests.get(f"{BASE_URL}/api/v3/exchangeInfo", timeout=15).json()
+    r = requests.get(f"{BASE_URL}/api/v3/exchangeInfo", timeout=15)
+    r.raise_for_status()
+    data = r.json()
+    if "symbols" not in data:
+        print("Unexpected response:\n", data)
+        sys.exit(1)
     return [
-        s["symbol"] for s in ex["symbols"]
+        s["symbol"] for s in data["symbols"]
         if s["status"] == "TRADING"
         and s["isSpotTradingAllowed"]
         and s["quoteAsset"] == "USDT"
