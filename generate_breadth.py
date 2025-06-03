@@ -1,4 +1,8 @@
-import time, random, sys, json
+import pandas as pd
+import requests
+import ta
+import csv, datetime as dt, os, sys, time, random, json
+
 
 BASE_URL = "https://api.binance.vision"        # CDN mirror
 
