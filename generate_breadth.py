@@ -1,29 +1,35 @@
-import pandas as pd
-import requests
-import ta
-import csv, datetime as dt, os, sys, time, random, json
+# --- top of generate_breadth.py ---------------------------------
+import pandas as pd, requests, ta, csv, datetime as dt, os, sys, time, random, json
 
-
-BASE_URL = "https://api.binance.vision"        # CDN mirror
-
+BASE_URLS = [
+    "https://data.binance.com",    # CDN mirror (usually OK)
+    "https://api.binance.com"      # main API (weight-limited but resolvable)
+]
+START = dt.datetime(2023, 1, 1)
+STABLES = {...}
 HDRS = {
-    "User-Agent":  "Mozilla/5.0 (GitHub Actions bot)",
-    "Accept":      "application/json"
+    "User-Agent": "Mozilla/5.0 (GitHub Actions bot)",
+    "Accept": "application/json"
 }
 
-def safe_get_json(url, max_try=5, pause=3):
-    for i in range(max_try):
-        r = requests.get(url, headers=HDRS, timeout=15)
-        if r.ok and r.headers.get("Content-Type","").startswith("application/json"):
-            return r.json()
-        # not JSON – maybe HTML challenge; print first 120 chars for debug
-        print(f"❗ non-JSON response (try {i+1}/{max_try}):\n",
-              r.text[:120].replace('\n',' ') , "…")
-        time.sleep(pause + random.uniform(0,2))
-    sys.exit("👎 Binance API keeps returning non-JSON; aborting run.")
+def safe_get_json(path, max_try=5, pause=3):
+    """Try each BASE_URL; retry a few times if HTML / rate-limit page."""
+    for base in BASE_URLS:
+        url = f"{base}{path}"
+        for n in range(max_try):
+            try:
+                r = requests.get(url, headers=HDRS, timeout=15)
+                if (r.ok and
+                    r.headers.get("Content-Type","").startswith("application/json")):
+                    return r.json()
+                print(f"⚠️  non-JSON ({r.status_code}) from {base} (try {n+1})")
+            except requests.exceptions.RequestException as e:
+                print(f"⚠️  {e} ({base}, try {n+1})")
+            time.sleep(pause + random.uniform(0,2))
+    sys.exit("❌  All Binance endpoints failed")
 
 def universe():
-    data = safe_get_json(f"{BASE_URL}/api/v3/exchangeInfo")
+    data = safe_get_json("/api/v3/exchangeInfo")
     return [
         s["symbol"] for s in data["symbols"]
         if s["status"] == "TRADING"
@@ -31,6 +37,8 @@ def universe():
         and s["quoteAsset"] == "USDT"
         and s["baseAsset"] not in STABLES
     ]
+# ----------------------------------------------------------------
+
 
 
 def klines(sym, start_ms):
