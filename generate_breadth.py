@@ -11,8 +11,9 @@ import ta
 import datetime as dt
 
 # ─────────── CONFIG ───────────
-BINANCE_EXCHANGE_INFO = "https://api.binance.com/api/v3/exchangeInfo"
+BINANCE_EXCHANGE_INFO = "https://api.binance.com/api/v3/exchangeInfo"  # (no longer used for fetching bases)
 CC_HISTODAY           = "https://min-api.cryptocompare.com/data/v2/histoday"
+CC_ALL_EXCHANGES      = "https://min-api.cryptocompare.com/data/all/exchanges"
 API_KEY_ENV           = "CRYPTOCOMPARE_API_KEY"
 
 # 1) We need ≥200 days of data before Jan 1 2024, so fetch from Jan 1 2023
@@ -38,40 +39,45 @@ HEADERS_CC = {
 
 # ─────────── HELPERS ───────────
 
-def fetch_usdt_bases_from_binance():
+def fetch_usdt_bases_from_cc():
     """
-    Calls Binance /exchangeInfo and returns a list of base symbols
-    where quoteAsset == "USDT" and baseAsset not in STABLES.
+    Uses CryptoCompare’s “all/exchanges?tsym=USDT” endpoint to find every coin
+    that trades against USDT on Binance. Returns a sorted list of base symbols,
+    excluding any stablecoins from STABLES.
     """
-    # r = requests.get(BINANCE_EXCHANGE_INFO, timeout=15)
-    # r.raise_for_status()
-    # symbols = r.json().get("symbols", [])
-        try:
-        r = requests.get(BINANCE_EXCHANGE_INFO, timeout=15)
+    params = {
+        "tsym": "USDT",
+        "api_key": CC_API_KEY
+    }
+
+    try:
+        r = requests.get(CC_ALL_EXCHANGES, params=params, headers=HEADERS_CC, timeout=30)
         r.raise_for_status()
-        symbols = r.json().get("symbols", [])
-    except requests.RequestException:
-        # Fallback to local exchangeInfo data if available
-        fallback_path = os.path.join("data", "exchangeInfo.json")
-        if os.path.exists(fallback_path):
-            with open(fallback_path, "r", encoding="utf-8") as f:
-                try:
-                    symbols = json.load(f).get("symbols", [])
-                    print("⚠️  Using local exchangeInfo fallback data.")
-                except Exception:
-                    raise
-        else:
-            raise
-    bases = []
-    for s in symbols:
-        if (
-            s.get("status") == "TRADING"
-            and s.get("isSpotTradingAllowed")
-            and s.get("quoteAsset") == "USDT"
-            and s.get("baseAsset") not in STABLES
-        ):
-            bases.append(s["baseAsset"])
-    return sorted(set(bases))
+    except requests.RequestException as e:
+        print(f"❌ Error fetching exchange list from CryptoCompare: {e}")
+        return []
+
+    try:
+        payload = r.json()
+    except Exception as e:
+        print(f"❌ Failed to parse JSON from CryptoCompare response: {e}")
+        return []
+
+    # Ensure structure is as expected
+    if payload.get("Response") != "Success" or "Data" not in payload:
+        print("❌ Unexpected CryptoCompare response format or 'Response' != 'Success'.")
+        return []
+
+    all_exchanges = payload["Data"]
+    if "Binance" not in all_exchanges:
+        print("❌ CryptoCompare did not return a 'Binance' section under Data.")
+        return []
+
+    # Keys under Data["Binance"] are base symbols trading vs USDT on Binance
+    raw_bases = list(all_exchanges["Binance"].keys())
+    # Filter out stablecoins
+    filtered = [b for b in raw_bases if b not in STABLES]
+    return sorted(filtered)
 
 
 def fetch_history_from_cc(base):
@@ -159,9 +165,13 @@ def write_pine_csv(path, header_name, series):
 # ─────────── MAIN ───────────
 
 def main():
-    print("⏳  Fetching USDT bases from Binance…")
-    bases = fetch_usdt_bases_from_binance()
-    print(f"  → {len(bases)} non-stable USDT bases found.")
+    print("⏳  Fetching USDT bases from CryptoCompare…")
+    bases = fetch_usdt_bases_from_cc()
+    print(f"  → {len(bases)} non-stable USDT bases found on Binance (via CryptoCompare).")
+
+    if not bases:
+        print("❌ No bases to process; exiting.")
+        return
 
     # Container for breadth: { "YYYY-MM-DD": { a75:0, t75:0, a200:0, t200:0 } }
     breadth = {}
@@ -184,8 +194,14 @@ def main():
 
         closes = df["close"].tolist()
         # Calculate EMA-75 & EMA-200
-        ema75_arr  = pad_ema(ta.trend.ema_indicator(pd.Series(closes), 75).tolist(), 75)
-        ema200_arr = pad_ema(ta.trend.ema_indicator(pd.Series(closes), 200).tolist(), 200)
+        ema75_arr  = pad_ema(
+            ta.trend.ema_indicator(pd.Series(closes), 75).tolist()[74:],
+            75,
+        )
+        ema200_arr = pad_ema(
+            ta.trend.ema_indicator(pd.Series(closes), 200).tolist()[199:],
+            200,
+        )
 
         # Convert each bar's "time" (ms) → date string "YYYY-MM-DD" (UTC)
         dates = [dt.datetime.utcfromtimestamp(t // 1000).strftime("%Y-%m-%d") for t in df["time"]]
@@ -208,6 +224,7 @@ def main():
                 if c > e200:
                     breadth[date]["a200"] += 1
 
+        # Pause between CryptoCompare calls
         time.sleep(PAUSE_MS / 1000.0)
 
     # Launch threads
