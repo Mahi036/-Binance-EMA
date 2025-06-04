@@ -19,7 +19,7 @@ API_KEY_ENV           = "CRYPTOCOMPARE_API_KEY"
 # 1) We need ≥200 days of data before Jan 1 2024, so fetch from Jan 1 2023
 EMA_WARMUP_START = dt.datetime(2023, 1, 1)   # warm-up start (UTC)
 OUTPUT_START     = dt.datetime(2024, 1, 1)   # only output from this date onward (UTC)
-PAUSE_MS         = 1200                     # 1.2 s between CryptoCompare calls
+PAUSE_MS         = 1200                     # 1.2 s between CryptoCompare calls
 CONCURRENCY      = 4                        # up to 4 parallel CC calls
 
 STABLES = {
@@ -44,7 +44,7 @@ def fetch_usdt_bases_from_cc():
     Uses CryptoCompare’s “all/exchanges?tsym=USDT” endpoint to find every coin
     that trades against USDT on Binance. Returns a sorted list of base symbols,
     excluding any stablecoins from STABLES. If the response format is unexpected
-    or “Binance” section is missing, returns an empty list.
+    or no “Binance” section is found (case-insensitive), returns an empty list.
     """
     params = {
         "tsym": "USDT",
@@ -64,13 +64,23 @@ def fetch_usdt_bases_from_cc():
         print(f"❌ Failed to parse JSON from CryptoCompare response: {e}")
         return []
 
-    # Attempt to find “Data” → “Binance”
     data_section = payload.get("Data")
-    if not isinstance(data_section, dict) or "Binance" not in data_section:
-        print("⚠️  Unexpected CryptoCompare response format (no Data→Binance).")
+    if not isinstance(data_section, dict):
+        print("⚠️  Unexpected CryptoCompare response format (no Data object).")
         return []
 
-    raw_bases = list(data_section["Binance"].keys())
+    # Look for a key matching “binance” (case-insensitive)
+    binance_section = None
+    for exch_name, pairs in data_section.items():
+        if exch_name.lower() == "binance":
+            binance_section = pairs
+            break
+
+    if binance_section is None or not isinstance(binance_section, dict):
+        print("⚠️  No “Binance” section found under Data (case-insensitive).")
+        return []
+
+    raw_bases = list(binance_section.keys())
     # Filter out stablecoins
     filtered = [b for b in raw_bases if b not in STABLES]
     return sorted(filtered)
@@ -137,15 +147,14 @@ def fetch_history_from_cc(base):
     Fetches daily OHLC for 'base' vs USD from CryptoCompare,
     from EMA_WARMUP_START up to today.
 
-    Returns a DataFrame with columns ["time","close"] where time is ms‐since‐epoch (UTC midnight).
+    Returns a DataFrame with columns ["time","close"] where time is ms-since-epoch (UTC midnight).
     If CryptoCompare returns an error (401/429), returns an empty DataFrame.
     """
     # Compute number of days between EMA_WARMUP_START and today
-    start_dt = EMA_WARMUP_START.replace(tzinfo=dt.timezone.utc)
     end_dt   = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
-    days_diff = (end_dt - start_dt).days
+    days_diff = (end_dt - EMA_WARMUP_START.replace(tzinfo=dt.timezone.utc)).days
 
     to_ts = int(end_dt.timestamp())  # UNIX seconds at today midnight UTC
 
@@ -256,7 +265,10 @@ def main():
         )
 
         # Convert each bar's "time" (ms) → date string "YYYY-MM-DD" (UTC)
-        dates = [dt.datetime.utcfromtimestamp(t // 1000).strftime("%Y-%m-%d") for t in df["time"]]
+        dates = [
+            dt.datetime.utcfromtimestamp(t // 1000).strftime("%Y-%m-%d")
+            for t in df["time"]
+        ]
 
         for i, date in enumerate(dates):
             e75  = ema75_arr[i]
