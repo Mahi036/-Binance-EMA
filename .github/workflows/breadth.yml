@@ -2,43 +2,48 @@ name: daily-breadth
 
 on:
   schedule:
-    - cron: '0 0 * * *'        # midnight UTC daily
-  workflow_dispatch:
-
-permissions:
-  contents: write             # ensure the GITHUB_TOKEN has write permission
+    - cron: '0 0 * * *'    # every midnight UTC
+  workflow_dispatch:     # allow manual runs
 
 jobs:
-  run:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-      # 1) Checkout the repo, persisting GITHUB_TOKEN for pushes:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: true   # <–– this makes sure git push uses $GITHUB_TOKEN
-          fetch-depth: 0             # ensures full history if you need to amend commits
+      - name: Check out repo
+        uses: actions/checkout@v3
 
-      # 2) Set up Python 3.11
-      - name: Set up Python
+      - name: Set up Python 3.10
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: '3.10'
 
-      # 3) Install dependencies
       - name: Install dependencies
-        run: pip install pandas requests ta
-
-      # 4) Run the breadth‐generator script
-      - name: Run breadth generator
-        run: python generate_breadth.py
-
-      # 5) Commit & push any changes to data/*.csv
-      - name: Commit CSVs back to GitHub
         run: |
-          git config user.name  "breadth-bot"
-          git config user.email "breadth-bot@users.noreply.github.com"
-          git add data/*.csv
-          git commit -m "auto: daily breadth" || echo "No changes to commit"
-          git push
+          python -m pip install --upgrade pip
+          pip install requests pandas ta python-dayjs
+
+      - name: Generate breadth via CryptoCompare
+        env:
+          CRYPTOCOMPARE_API_KEY: ${{ secrets.CRYPTOCOMPARE_API_KEY }}
+        run: |
+          python generatebreadth.py
+
+      - name: Preview first 5 lines of BR75.csv and BR200.csv
+        run: |
+          echo "===== data/BR75.csv ====="
+          head -n5 data/BR75.csv || true
+          echo "===== data/BR200.csv ====="
+          head -n5 data/BR200.csv || true
+
+      - name: Commit updated CSVs
+        run: |
+          git config user.name "breadth-bot"
+          git config user.email "breadth-bot@example.com"
+          git add data/BR75.csv data/BR200.csv
+          if git diff --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "ci: nightly breadth update"
+            git push
+          fi
