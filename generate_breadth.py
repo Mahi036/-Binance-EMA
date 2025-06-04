@@ -11,7 +11,7 @@ import ta
 import datetime as dt
 
 # ─────────── CONFIG ───────────
-BINANCE_EXCHANGE_INFO = "https://api.binance.com/api/v3/exchangeInfo"  # (no longer used for fetching bases)
+BINANCE_EXCHANGE_INFO = "https://api.binance.com/api/v3/exchangeInfo"
 CC_HISTODAY           = "https://min-api.cryptocompare.com/data/v2/histoday"
 CC_ALL_EXCHANGES      = "https://min-api.cryptocompare.com/data/all/exchanges"
 API_KEY_ENV           = "CRYPTOCOMPARE_API_KEY"
@@ -23,7 +23,7 @@ PAUSE_MS         = 1200                     # 1.2 s between CryptoCompare call
 CONCURRENCY      = 4                        # up to 4 parallel CC calls
 
 STABLES = {
-    "USDT","USDC","BUSD","DAI","TUSD","USDP","USDD","USTC","FRAX","FEI","USX","EURT"
+    "USDT", "USDC", "BUSD", "DAI", "TUSD", "USDP", "USDD", "USTC", "FRAX", "FEI", "USX", "EURT"
 }
 
 # Fetch your CryptoCompare API key from environment
@@ -43,7 +43,8 @@ def fetch_usdt_bases_from_cc():
     """
     Uses CryptoCompare’s “all/exchanges?tsym=USDT” endpoint to find every coin
     that trades against USDT on Binance. Returns a sorted list of base symbols,
-    excluding any stablecoins from STABLES.
+    excluding any stablecoins from STABLES. If the response format is unexpected
+    or “Binance” section is missing, returns an empty list.
     """
     params = {
         "tsym": "USDT",
@@ -63,16 +64,72 @@ def fetch_usdt_bases_from_cc():
         print(f"❌ Failed to parse JSON from CryptoCompare response: {e}")
         return []
 
-    # Some CryptoCompare responses do not include a "Response" field,
-    # so we check for "Data" → "Binance" directly.
+    # Attempt to find “Data” → “Binance”
     data_section = payload.get("Data")
     if not isinstance(data_section, dict) or "Binance" not in data_section:
-        print("❌ Unexpected CryptoCompare response format (no Data→Binance).")
+        print("⚠️  Unexpected CryptoCompare response format (no Data→Binance).")
         return []
 
     raw_bases = list(data_section["Binance"].keys())
+    # Filter out stablecoins
     filtered = [b for b in raw_bases if b not in STABLES]
     return sorted(filtered)
+
+
+def fetch_usdt_bases_from_binance():
+    """
+    Calls Binance /exchangeInfo and returns a list of base symbols
+    where quoteAsset == "USDT" and baseAsset not in STABLES.
+    Falls back to local data/exchangeInfo.json if the API call fails.
+    """
+    try:
+        r = requests.get(BINANCE_EXCHANGE_INFO, timeout=15)
+        r.raise_for_status()
+        symbols = r.json().get("symbols", [])
+    except requests.RequestException:
+        # Fallback to local exchangeInfo data if available
+        fallback_path = os.path.join("data", "exchangeInfo.json")
+        if os.path.exists(fallback_path):
+            with open(fallback_path, "r", encoding="utf-8") as f:
+                try:
+                    symbols = json.load(f).get("symbols", [])
+                    print("⚠️  Using local exchangeInfo fallback data.")
+                except Exception:
+                    raise
+        else:
+            raise
+
+    bases = []
+    for s in symbols:
+        if (
+            s.get("status") == "TRADING"
+            and s.get("isSpotTradingAllowed")
+            and s.get("quoteAsset") == "USDT"
+            and s.get("baseAsset") not in STABLES
+        ):
+            bases.append(s["baseAsset"])
+    return sorted(set(bases))
+
+
+def fetch_usdt_bases():
+    """
+    First attempts to fetch USDT bases from CryptoCompare. If that yields a
+    non-empty list, returns it. Otherwise, falls back to Binance’s /exchangeInfo
+    (with local fallback if necessary).
+    """
+    bases_cc = fetch_usdt_bases_from_cc()
+    if bases_cc:
+        print(f"  → Retrieved {len(bases_cc)} bases via CryptoCompare.")
+        return bases_cc
+
+    print("⚠️  Falling back to Binance /exchangeInfo for USDT bases.")
+    try:
+        bases_bn = fetch_usdt_bases_from_binance()
+        print(f"  → Retrieved {len(bases_bn)} bases via Binance exchangeInfo.")
+        return bases_bn
+    except Exception as e:
+        print(f"❌ Error fetching from Binance: {e}")
+        return []
 
 
 def fetch_history_from_cc(base):
@@ -160,9 +217,9 @@ def write_pine_csv(path, header_name, series):
 # ─────────── MAIN ───────────
 
 def main():
-    print("⏳  Fetching USDT bases from CryptoCompare…")
-    bases = fetch_usdt_bases_from_cc()
-    print(f"  → {len(bases)} non-stable USDT bases found on Binance (via CryptoCompare).")
+    print("⏳  Fetching USDT bases from CryptoCompare (with Binance fallback)…")
+    bases = fetch_usdt_bases()
+    print(f"  → {len(bases)} total non-stable USDT bases found.")
 
     if not bases:
         print("❌ No bases to process; exiting.")
@@ -242,8 +299,8 @@ def main():
         pct75  = (entry["a75"]  / entry["t75"]  * 100.0) if entry["t75"] > 0  else 0.0
         pct200 = (entry["a200"] / entry["t200"] * 100.0) if entry["t200"] > 0 else 0.0
 
-        series75.append({ "time": t_ms, "pct_above_75":  round(pct75, 2) })
-        series200.append({ "time": t_ms, "pct_above_200": round(pct200, 2) })
+        series75.append({"time": t_ms, "pct_above_75":  round(pct75, 2)})
+        series200.append({"time": t_ms, "pct_above_200": round(pct200, 2)})
 
     # Write CSVs
     write_pine_csv("data/BR75.csv",  "pct_above_75",  series75)
