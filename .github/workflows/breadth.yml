@@ -31,7 +31,7 @@ jobs:
         env:
           CRYPTOCOMPARE_API_KEY: ${{ secrets.CRYPTOCOMPARE_API_KEY }}
         run: |
-          python generatebreadth.py
+          python generate_breadth.py
 
       # 5) Preview first few lines of each CSV (for debugging)
       - name: Preview generated CSVs
