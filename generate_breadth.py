@@ -5,6 +5,7 @@ import sys
 import time
 import csv
 import requests
+import json
 import pandas as pd
 import ta
 import datetime as dt
@@ -42,9 +43,25 @@ def fetch_usdt_bases_from_binance():
     Calls Binance /exchangeInfo and returns a list of base symbols
     where quoteAsset == "USDT" and baseAsset not in STABLES.
     """
-    r = requests.get(BINANCE_EXCHANGE_INFO, timeout=15)
-    r.raise_for_status()
-    symbols = r.json().get("symbols", [])
+    # r = requests.get(BINANCE_EXCHANGE_INFO, timeout=15)
+    # r.raise_for_status()
+    # symbols = r.json().get("symbols", [])
+        try:
+        r = requests.get(BINANCE_EXCHANGE_INFO, timeout=15)
+        r.raise_for_status()
+        symbols = r.json().get("symbols", [])
+    except requests.RequestException:
+        # Fallback to local exchangeInfo data if available
+        fallback_path = os.path.join("data", "exchangeInfo.json")
+        if os.path.exists(fallback_path):
+            with open(fallback_path, "r", encoding="utf-8") as f:
+                try:
+                    symbols = json.load(f).get("symbols", [])
+                    print("⚠️  Using local exchangeInfo fallback data.")
+                except Exception:
+                    raise
+        else:
+            raise
     bases = []
     for s in symbols:
         if (
