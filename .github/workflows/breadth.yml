@@ -10,38 +10,44 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1) Check out the repo
       - name: Check out repo
         uses: actions/checkout@v3
 
-      - name: Set up Python 3.10
+      # 2) Set up Python 3.10
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
+      # 3) Install dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests pandas ta python-dayjs
+          pip install requests pandas ta
 
+      # 4) Run the newly updated generatebreadth.py
       - name: Generate breadth via CryptoCompare
         env:
           CRYPTOCOMPARE_API_KEY: ${{ secrets.CRYPTOCOMPARE_API_KEY }}
         run: |
           python generatebreadth.py
 
-      - name: Preview first 5 lines of BR75.csv and BR200.csv
+      # 5) Preview first few lines of each CSV (for debugging)
+      - name: Preview generated CSVs
         run: |
           echo "===== data/BR75.csv ====="
           head -n5 data/BR75.csv || true
           echo "===== data/BR200.csv ====="
           head -n5 data/BR200.csv || true
 
+      # 6) Commit updated CSVs back to the repo (if they changed)
       - name: Commit updated CSVs
         run: |
           git config user.name "breadth-bot"
           git config user.email "breadth-bot@example.com"
           git add data/BR75.csv data/BR200.csv
-          if git diff --quiet; then
+          if git diff --cached --quiet; then
             echo "No changes to commit."
           else
             git commit -m "ci: nightly breadth update"
