@@ -1,7 +1,7 @@
-# generate_breadth.py
+# generate_breadth_with_coingecko.py
 # ───────────────────────────────────────────────────────────────────
-import pandas as pd
 import requests
+import pandas as pd
 import ta
 import csv
 import datetime as dt
@@ -11,20 +11,17 @@ import time
 import random
 
 # ─────────── CONFIG ───────────
-# 1) “Raw” snapshot of exchangeInfo.json, maintained daily by Binance docs
-#    (current path as of 2025-06; never blocked, always JSON)
-# 2) Falling back to api-gcp (and api1/api2/api3/the main) if snapshot fails
-EXCHANGEINFO_SOURCES = [
-    # (1) read-only JSON file on GitHub
-    "https://raw.githubusercontent.com/binance/binance-spot-api-docs/master/openapi/spot-api-json/exchangeInfo.json",
-    # (2) public Binance endpoints (GCP host + backup domains)
-    "https://api-gcp.binance.com/api/v3/exchangeInfo",
-    "https://api1.binance.com/api/v3/exchangeInfo",
-    "https://api2.binance.com/api/v3/exchangeInfo",
-    "https://api3.binance.com/api/v3/exchangeInfo",
-]
+# 1) Use CoinGecko to get ALL USDT bases on Binance
+# 2) Then for each base, build "BASEUSDT" as the trading symbol on Binance spots.
+START = dt.datetime(2023, 1, 1)  # warm-up ≥200 days so EMA-200 clears by 2024-01-01
 
-# When fetching klines, rotate through these if one is blocked
+# Known stablebases to filter out (same as before)
+STABLES = {
+    'USDT','USDC','FDUSD','TUSD','DAI','USDP','BUSD','USDD',
+    'AEUR','XUSD','USD1','PYUSD','PAXG','WBTC','WBETH'
+}
+
+# When fetching klines: rotate through these Binance hosts
 KLINE_BASES = [
     "https://api-gcp.binance.com",
     "https://api1.binance.com",
@@ -32,61 +29,47 @@ KLINE_BASES = [
     "https://api3.binance.com"
 ]
 
-# Start ≥200 days before 2024-01-01 so EMA-200 warms up
-START   = dt.datetime(2023, 1, 1)
-
-STABLES = {
-    'USDT','USDC','FDUSD','TUSD','DAI','USDP','BUSD','USDD',
-    'AEUR','XUSD','USD1','PYUSD','PAXG','WBTC','WBETH'
-}
-
-# A normal “browser‐like” header to avoid Cloudflare challenges
+# Browser-like header to minimize challenges
 HDRS = {
     "User-Agent": "Mozilla/5.0 (GitHub Actions)",
     "Accept": "application/json"
 }
 
 # ─────────── HELPERS ───────────
-def get_json_with_retry(urls, max_try=5):
+def fetch_binance_usdt_bases(max_pages=50, pause=1.0):
     """
-    Try each URL in order. For each URL, attempt up to max_try times.
-    If we get a 200 with JSON, return r.json().
-    Otherwise, keep trying; on total failure, sys.exit().
+    Calls CoinGecko /exchanges/binance/tickers paginated,
+    collects all unique base symbols where target == 'USDT'.
     """
-    for url in urls:
-        for attempt in range(1, max_try + 1):
-            try:
-                r = requests.get(url, headers=HDRS, timeout=15)
-                ctype = r.headers.get("content-type", "")
-                # Accept only application/json (avoid HTML blocks)
-                if r.ok and ctype.startswith("application/json"):
-                    return r.json()
-                print(f"⚠️  [{attempt}] non-JSON ({r.status_code}) from {url}")
-            except requests.exceptions.RequestException as e:
-                print(f"⚠️  [{attempt}] {e} from {url}")
-            time.sleep(2 + random.random() * 2)
-    sys.exit("❌  All exchangeInfo sources failed")
+    bases = set()
+    for page in range(1, max_pages + 1):
+        url = "https://api.coingecko.com/api/v3/exchanges/binance/tickers"
+        params = {"per_page": 100, "page": page}
+        r = requests.get(url, params=params, timeout=10)
+        r.raise_for_status()
+        data = r.json()
 
-def universe():
-    """
-    Fetch the full exchangeInfo.json (or exit if unreachable),
-    then return the list of all USDT‐quoted, non‐stable spot symbols.
-    """
-    data = get_json_with_retry(EXCHANGEINFO_SOURCES)
-    return [
-        s["symbol"]
-        for s in data["symbols"]
-        if s["status"] == "TRADING"
-        and s["isSpotTradingAllowed"]
-        and s["quoteAsset"] == "USDT"
-        and s["baseAsset"] not in STABLES
-    ]
+        tickers = data.get("tickers", [])
+        if not tickers:
+            break
+
+        for t in tickers:
+            if t.get("target") == "USDT":
+                base = t.get("base")
+                if base:
+                    bases.add(base.upper())
+
+        has_more = data.get("has_more", False)
+        if not has_more:
+            break
+        time.sleep(pause)
+
+    return sorted(bases)
 
 def klines(sym, start_ms):
     """
     Rotate through KLINE_BASES until one returns valid JSON klines for 'sym' after 'start_ms'.
-    Returns a DataFrame with columns ['time','close'].
-    Exits if every host fails.
+    Returns a DataFrame with columns ['time','close'] or exits if all fail.
     """
     for base in KLINE_BASES:
         try:
@@ -119,8 +102,8 @@ def klines(sym, start_ms):
 
 def tv_write(col, out_fn, df):
     """
-    Write a single‐series CSV suitable for Pine Seeds:
-      time (ms UTC), open,high,low,close (all = df[col]), volume=0
+    Write a single‐series CSV appropriate for Pine Seeds:
+      time (ms UTC), open, high, low, close (all = df[col]), volume=0
     """
     os.makedirs("data", exist_ok=True)
     with open(out_fn, "w", newline="") as f:
@@ -130,17 +113,32 @@ def tv_write(col, out_fn, df):
             w.writerow([t, v, v, v, v, 0])
 
 # ─────────── MAIN ───────────
-print("⏳ Building universe…")
-syms = universe()
-print("Universe size:", len(syms))
+print("⏳ Fetching USDT‐quoted bases from CoinGecko…")
+bases = fetch_binance_usdt_bases()
+print(f"  → found {len(bases)} bases on Binance that trade vs USDT.")
 
+# Filter out known stablecoins (if you do not want to exclude stables, skip this)
+bases = [b for b in bases if b not in STABLES]
+print(f"  → after removing stable‐bases: {len(bases)} tokens remain.")
+
+# Build full symbols ("BASEUSDT") for each coin
+symbols = [f"{b}USDT" for b in bases]
+
+print("⏳ Building breadth universe…")
 rows = {}
 start_ms = int(START.timestamp() * 1000)
 
-for sym in syms:
-    df = klines(sym, start_ms)
+for sym in symbols:
+    try:
+        df = klines(sym, start_ms)
+    except SystemExit as e:
+        print(f"⚠️  Skipping {sym}: {e}")
+        continue
+
     if len(df) < 200:
-        continue    # skip symbols that never warm up EMA-200
+        # skip coins that never warm up EMA-200
+        print(f"⚠️  {sym} has only {len(df)} days; skipping.")
+        continue
 
     df["ema75"]  = ta.trend.ema_indicator(df["close"], 75)
     df["ema200"] = ta.trend.ema_indicator(df["close"], 200)
@@ -149,7 +147,7 @@ for sym in syms:
 
     for t, a75, a200, e200 in zip(df["time"], df["a75"], df["a200"], df["ema200"]):
         if pd.isna(e200):
-            continue   # still warming up
+            continue
         if t not in rows:
             rows[t] = {"n": 0, "p75": 0, "p200": 0}
         rows[t]["n"]   += 1
