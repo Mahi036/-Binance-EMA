@@ -63,19 +63,14 @@ def fetch_usdt_bases_from_cc():
         print(f"❌ Failed to parse JSON from CryptoCompare response: {e}")
         return []
 
-    # Ensure structure is as expected
-    if payload.get("Response") != "Success" or "Data" not in payload:
-        print("❌ Unexpected CryptoCompare response format or 'Response' != 'Success'.")
+    # Some CryptoCompare responses do not include a "Response" field,
+    # so we check for "Data" → "Binance" directly.
+    data_section = payload.get("Data")
+    if not isinstance(data_section, dict) or "Binance" not in data_section:
+        print("❌ Unexpected CryptoCompare response format (no Data→Binance).")
         return []
 
-    all_exchanges = payload["Data"]
-    if "Binance" not in all_exchanges:
-        print("❌ CryptoCompare did not return a 'Binance' section under Data.")
-        return []
-
-    # Keys under Data["Binance"] are base symbols trading vs USDT on Binance
-    raw_bases = list(all_exchanges["Binance"].keys())
-    # Filter out stablecoins
+    raw_bases = list(data_section["Binance"].keys())
     filtered = [b for b in raw_bases if b not in STABLES]
     return sorted(filtered)
 
